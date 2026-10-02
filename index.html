@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบรายงานน้ำท่วมเฉพาะพื้นที่</title>
+    <!-- โหลดไลบรารี Leaflet แผนที่ฟรี -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
+        #header { background: #007bff; color: white; padding: 15px; text-align: center; font-size: 18px; font-weight: bold; }
+        #map { flex: 1; width: 100%; }
+        #form-container { padding: 15px; background: #f8f9fa; border-top: 1px solid #ccc; max-height: 40vh; overflow-y: auto; }
+        .form-group { margin-bottom: 10px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; font-size: 14px; }
+        select, button { width: 100%; padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 5px; }
+        button { background: #28a745; color: white; border: none; font-weight: bold; cursor: pointer; }
+        button:hover { background: #218838; }
+    </style>
+</head>
+<body>
+
+    <div id="header">🗺️ ระบบรายงานสถานการณ์น้ำท่วม (คลิกบนแผนที่เพื่อรายงาน)</div>
+    <div id="map"></div>
+
+    <div id="form-container">
+        <form id="reportForm">
+            <input type="hidden" id="lat">
+            <input type="hidden" id="lng">
+            <div style="margin-bottom: 10px; color: #555; font-size: 14px;" id="locationStatus">
+                📍 สถานที่เลือก: ยังไม่ได้เลือกหมุดบนแผนที่
+            </div>
+            <div class="form-group">
+                <label>ระดับน้ำ:</label>
+                <select id="waterLevel" required>
+                    <option value="🟢 ตาตุ่ม / ถนนเริ่มแฉะ">🟢 ตาตุ่ม / ถนนเริ่มแฉะ</option>
+                    <option value="🟡 หัวเข่า / รถกระบะยังไหว">🟡 หัวเข่า / รถกระบะยังไหว</option>
+                    <option value="🟠 ครึ่งตัว / รถเล็กห้ามผ่าน">🟠 ครึ่งตัว / รถเล็กห้ามผ่าน</option>
+                    <option value="🔴 มิดหัว / อันตรายขั้นวิกฤต">🔴 มิดหัว / อันตรายขั้นวิกฤต</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>การสัญจร:</label>
+                <select id="passability" required>
+                    <option value="🚗 รถเล็กผ่านได้">🚗 รถเล็กผ่านได้</option>
+                    <option value="🚙 รถใหญ่/กระบะผ่านได้">🚙 รถใหญ่/กระบะผ่านได้</option>
+                    <option value="🚫 ผ่านไม่ได้ / อันตราย">🚫 ผ่านไม่ได้ / อันตราย</option>
+                </select>
+            </div>
+            <button type="submit">ส่งรายงานน้ำท่วม</button>
+        </form>
+    </div>
+
+    <!-- โหลดไลบรารี Leaflet และ Firebase -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, getDocs, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // === นำค่า Config ของคุณมาใส่ตรงนี้ ===
+        const firebaseConfig = {
+            apiKey: "AIzaSyCQnRNvnGU8QG5xsSx1XSAuYf_Vmm2-05I",
+            authDomain: "flood-report-app-bce2a.firebaseapp.com",
+            projectId: "flood-report-app-bce2a",
+            storageBucket: "flood-report-app-bce2a.firebasestorage.app",
+            messagingSenderId: "780675618019",
+            appId: "1:780675618019:web:4e04c00ebbe6dfeff321d6",
+            measurementId: "G-DF3Y2YVKVN"
+        };
+
+        // แทนที่ apiKey ด้วยค่าจริงของคุณ (นำข้อความเต็มมาใส่แทน YOUR_API_KEY)
+        //firebaseConfig.apiKey = prompt("กรุณากรอก apiKey ของคุณ หรือแก้ไขในโค้ดโดยตรง:") || "ใส่_API_KEY_ที่นี่";
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        // ตั้งค่าแผนที่เริ่มต้นที่กรุงเทพฯ (หรือปรับเปลี่ยนพิกัดตรงนี้ได้ตามต้องการ)
+        const map = L.map('map').setView([13.7563, 100.5018], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap'
+        }).addTo(map);
+
+        let currentMarker = null;
+
+        // เมื่อคลิกบนแผนที่
+        map.on('click', function(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            
+            document.getElementById('lat').value = lat;
+            document.getElementById('lng').value = lng;
+            document.getElementById('locationStatus').innerHTML = `📍 พิกัดเลือกแล้ว: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+            if (currentMarker) {
+                map.removeLayer(currentMarker);
+            }
+            currentMarker = L.marker([lat, lng]).addTo(map);
+        });
+
+        // ดึงข้อมูลเดิมมาแสดงบนแผนที่
+        async function loadReports() {
+            try {
+                const querySnapshot = await getDocs(collection(db, "reports"));
+                querySnapshot.forEach((doc) => {
+                    const data = doc.data();
+                    if (data.lat && data.lng) {
+                        L.marker([data.lat, data.lng]).addTo(map)
+                          .bindPopup(`<b>ระดับน้ำ:</b> ${data.waterLevel}<br><b>การสัญจร:</b> ${data.passability}`);
+                    }
+                });
+            } catch (err) {
+                console.log("ยังไม่มีข้อมูลหรือรอการเชื่อมต่อ");
+            }
+        }
+        loadReports();
+
+        // กดส่งฟอร์ม
+        document.getElementById('reportForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const lat = document.getElementById('lat').value;
+            const lng = document.getElementById('lng').value;
+            
+            if(!lat) {
+                alert('กรุณาคลิกเลือกตำแหน่งบนแผนที่ก่อนส่งรายงาน');
+                return;
+            }
+
+            try {
+                await addDoc(collection(db, "reports"), {
+                    lat: parseFloat(lat),
+                    lng: parseFloat(lng),
+                    waterLevel: document.getElementById('waterLevel').value,
+                    passability: document.getElementById('passability').value,
+                    timestamp: serverTimestamp()
+                });
+                alert('ส่งรายงานสำเร็จ!');
+                location.reload();
+            } catch (e) {
+                alert('เกิดข้อผิดพลาด: ' + e.message);
+            }
+        });
+    </script>
+</body>
+</html>
